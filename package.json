@@ -1,0 +1,23 @@
+{
+  "name": "mizuki-writer",
+  "version": "0.1.0",
+  "description": "A self-hosted writing and management panel for Mizuki-based blogs",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "gray-matter": "^4.0.3",
+    "jsonwebtoken": "^9.0.2",
+    "marked": "^15.0.0",
+    "multer": "^1.4.5-lts.1",
+    "node-fetch": "^3.3.2",
+    "pg": "^8.13.0"
+  }
+}
