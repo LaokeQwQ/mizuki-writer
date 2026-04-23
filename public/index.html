@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mizuki Admin</title>
+  <meta name="description" content="Mizuki Blog Admin Dashboard">
+  <link rel="preload" href="/fonts/MaterialSymbolsRounded.ttf" as="font" type="font/ttf" crossorigin>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+
+<body>
+  <!-- Login / Setup Screen -->
+  <div id="auth-screen" class="auth-screen">
+    <div class="auth-card">
+      <div class="auth-logo">
+        <span class="material-symbols-rounded">local_florist</span>
+        <h1>Mizuki Admin</h1>
+        <p class="auth-subtitle">博客管理后台</p>
+      </div>
+
+      <!-- Setup Form (first time) -->
+      <form id="setup-form" class="auth-form hidden">
+        <h2>初始化设置</h2>
+        <p class="form-hint">首次使用，请输入服务器日志中的安全令牌并设置管理员账户</p>
+        <div class="input-group">
+          <span class="material-symbols-rounded">key</span>
+          <input type="text" id="setup-token" placeholder="安全令牌 (Setup Token)" autocomplete="off">
+        </div>
+        <div class="input-group">
+          <span class="material-symbols-rounded">person</span>
+          <input type="text" id="setup-username" placeholder="用户名" value="admin">
+        </div>
+        <div class="input-group">
+          <span class="material-symbols-rounded">lock</span>
+          <input type="password" id="setup-password" placeholder="密码（至少6位）">
+        </div>
+        <div class="input-group">
+          <span class="material-symbols-rounded">lock</span>
+          <input type="password" id="setup-password-confirm" placeholder="确认密码">
+        </div>
+        <button type="submit" class="btn-primary">
+          <span class="material-symbols-rounded">check</span>
+          完成设置
+        </button>
+      </form>
+
+      <!-- Login Form -->
+      <form id="login-form" class="auth-form hidden">
+        <h2>登录</h2>
+        <div class="input-group">
+          <span class="material-symbols-rounded">person</span>
+          <input type="text" id="login-username" placeholder="用户名">
+        </div>
+        <div class="input-group">
+          <span class="material-symbols-rounded">lock</span>
+          <input type="password" id="login-password" placeholder="密码">
+        </div>
+        <button type="submit" class="btn-primary">
+          <span class="material-symbols-rounded">login</span>
+          登录
+        </button>
+      </form>
+
+      <div id="auth-error" class="auth-error hidden"></div>
+    </div>
+  </div>
+
+  <!-- Main App -->
+  <div id="app" class="app hidden">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <span class="material-symbols-rounded logo-icon">local_florist</span>
+        <span class="sidebar-title">Mizuki</span>
+      </div>
+      <nav class="sidebar-nav">
+        <a href="#/" class="nav-item active" data-route="dashboard">
+          <span class="material-symbols-rounded">dashboard</span>
+          <span>仪表盘</span>
+        </a>
+        <a href="#/posts" class="nav-item" data-route="posts">
+          <span class="material-symbols-rounded">edit_note</span>
+          <span>文章管理</span>
+        </a>
+        <a href="#/new" class="nav-item" data-route="new">
+          <span class="material-symbols-rounded">add_circle</span>
+          <span>写文章</span>
+        </a>
+        <a href="#/pages" class="nav-item" data-route="pages">
+          <span class="material-symbols-rounded">docs</span>
+          <span>页面管理</span>
+        </a>
+        <a href="#/comments" class="nav-item" data-route="comments">
+          <span class="material-symbols-rounded">forum</span>
+          <span>评论管理</span>
+        </a>
+        <div class="nav-divider"></div>
+        <a href="#/build" class="nav-item" data-route="build">
+          <span class="material-symbols-rounded">rocket_launch</span>
+          <span>构建部署</span>
+        </a>
+        <a href="#/settings" class="nav-item" data-route="settings">
+          <span class="material-symbols-rounded">settings</span>
+          <span>设置</span>
+        </a>
+      </nav>
+      <div class="sidebar-footer">
+        <button id="btn-theme" class="nav-item" title="切换主题">
+          <span class="material-symbols-rounded">dark_mode</span>
+          <span>切换主题</span>
+        </button>
+        <button id="btn-logout" class="nav-item" title="退出登录">
+          <span class="material-symbols-rounded">logout</span>
+          <span>退出登录</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- Mobile Header -->
+    <header class="mobile-header">
+      <button id="btn-menu" class="icon-btn">
+        <span class="material-symbols-rounded">menu</span>
+      </button>
+      <span class="mobile-title">Mizuki Admin</span>
+      <div style="display: flex; gap: 4px;">
+        <button id="btn-mobile-theme" class="icon-btn" title="切换主题">
+          <span class="material-symbols-rounded">dark_mode</span>
+        </button>
+        <button id="btn-mobile-logout" class="icon-btn" title="退出登录">
+          <span class="material-symbols-rounded">logout</span>
+        </button>
+      </div>
+    </header>
+    <div id="sidebar-overlay" class="sidebar-overlay hidden"></div>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      <!-- Dashboard -->
+      <section id="page-dashboard" class="page">
+        <!-- Welcome Card -->
+        <div class="welcome-card" id="welcome-card">
+          <div class="welcome-avatar" id="welcome-avatar">
+            <span class="material-symbols-rounded">person</span>
+          </div>
+          <div class="welcome-info">
+            <h1 class="welcome-greeting" id="welcome-greeting">欢迎回来</h1>
+            <p class="welcome-hitokoto" id="welcome-hitokoto">加载中…</p>
+          </div>
+        </div>
+
+        <div class="stats-grid">
+          <div class="stat-card">
+            <span class="material-symbols-rounded stat-icon">article</span>
+            <div class="stat-info">
+              <span class="stat-value" id="stat-posts">-</span>
+              <span class="stat-label">文章总数</span>
+            </div>
+          </div>
+          <div class="stat-card">
+            <span class="material-symbols-rounded stat-icon">visibility_off</span>
+            <div class="stat-info">
+              <span class="stat-value" id="stat-drafts">-</span>
+              <span class="stat-label">草稿</span>
+            </div>
+          </div>
+          <div class="stat-card">
+            <span class="material-symbols-rounded stat-icon">sell</span>
+            <div class="stat-info">
+              <span class="stat-value" id="stat-tags">-</span>
+              <span class="stat-label">标签</span>
+            </div>
+          </div>
+          <div class="stat-card">
+            <span class="material-symbols-rounded stat-icon">folder</span>
+            <div class="stat-info">
+              <span class="stat-value" id="stat-categories">-</span>
+              <span class="stat-label">分类</span>
+            </div>
+          </div>
+        </div>
+        <div class="dashboard-section">
+          <h2>最近文章</h2>
+          <div id="recent-posts" class="recent-posts-list"></div>
+        </div>
+      </section>
+
+      <!-- Posts List -->
+      <section id="page-posts" class="page hidden">
+        <div class="page-header">
+          <h1>文章管理</h1>
+          <div class="page-actions">
+            <button id="btn-batch-delete" class="btn-outlined compact btn-danger-outline hidden">
+              <span class="material-symbols-rounded">delete_sweep</span>
+              <span id="batch-delete-count">批量删除</span>
+            </button>
+            <div class="search-box">
+              <span class="material-symbols-rounded">search</span>
+              <input type="text" id="posts-search" placeholder="搜索文章…">
+            </div>
+            <a href="#/new" class="btn-primary compact">
+              <span class="material-symbols-rounded">add</span>
+              新文章
+            </a>
+          </div>
+        </div>
+        <div id="posts-list" class="posts-table-container"></div>
+      </section>
+
+      <!-- Editor -->
+      <section id="page-editor" class="page hidden">
+        <div class="page-header">
+          <h1 id="editor-title">写文章</h1>
+          <div class="page-actions">
+            <button id="btn-preview-toggle" class="btn-outlined">
+              <span class="material-symbols-rounded">visibility</span>
+              预览
+            </button>
+            <button id="btn-save" class="btn-primary">
+              <span class="material-symbols-rounded">save</span>
+              保存
+            </button>
+          </div>
+        </div>
+
+        <div class="editor-layout">
+          <!-- Frontmatter Panel -->
+          <div class="frontmatter-panel">
+            <div class="fm-group">
+              <label>文章标题</label>
+              <input type="text" id="fm-title" placeholder="输入文章标题">
+            </div>
+            <div class="fm-row">
+              <div class="fm-group">
+                <label>Slug（文件名）</label>
+                <input type="text" id="fm-slug" placeholder="my-post">
+              </div>
+              <div class="fm-group">
+                <label>发布日期</label>
+                <input type="date" id="fm-published">
+              </div>
+            </div>
+            <div class="fm-group">
+              <label>摘要描述</label>
+              <textarea id="fm-description" rows="2" placeholder="文章描述…"></textarea>
+            </div>
+            <div class="fm-row">
+              <div class="fm-group">
+                <label>分类</label>
+                <input type="text" id="fm-category" placeholder="Frontend" list="category-list">
+                <datalist id="category-list"></datalist>
+              </div>
+              <div class="fm-group">
+                <label>标签</label>
+                <input type="text" id="fm-tags" placeholder="tag1, tag2">
+              </div>
+            </div>
+            <div class="fm-row fm-switches">
+              <label class="switch-label">
+                <input type="checkbox" id="fm-draft">
+                <span>草稿</span>
+              </label>
+              <label class="switch-label">
+                <input type="checkbox" id="fm-pinned">
+                <span>置顶</span>
+              </label>
+              <label class="switch-label">
+                <input type="checkbox" id="fm-comment" checked>
+                <span>评论</span>
+              </label>
+            </div>
+          </div>
+
+          <!-- Editor Area -->
+          <div class="editor-area">
+            <div class="editor-panes">
+              <div class="editor-pane" id="editor-write-pane">
+                <div class="editor-toolbar">
+                  <button class="toolbar-btn" data-action="bold" title="粗体 (Ctrl+B)"><b>B</b></button>
+                  <button class="toolbar-btn" data-action="italic" title="斜体 (Ctrl+I)"><i>I</i></button>
+                  <button class="toolbar-btn" data-action="strikethrough" title="删除线"><s>S</s></button>
+                  <button class="toolbar-btn" data-action="heading" title="标题">H</button>
+                  <span class="toolbar-sep"></span>
+                  <button class="toolbar-btn" data-action="link" title="链接">
+                    <span class="material-symbols-rounded" style="font-size:18px">link</span>
+                  </button>
+                  <button class="toolbar-btn" data-action="image" title="图片">
+                    <span class="material-symbols-rounded" style="font-size:18px">image</span>
+                  </button>
+                  <button class="toolbar-btn" data-action="code" title="代码块">
+                    <span class="material-symbols-rounded" style="font-size:18px">code</span>
+                  </button>
+                  <button class="toolbar-btn" data-action="quote" title="引用">
+                    <span class="material-symbols-rounded" style="font-size:18px">format_quote</span>
+                  </button>
+                  <span class="toolbar-sep"></span>
+                  <button class="toolbar-btn" data-action="ul" title="无序列表">
+                    <span class="material-symbols-rounded" style="font-size:18px">format_list_bulleted</span>
+                  </button>
+                  <button class="toolbar-btn" data-action="ol" title="有序列表">
+                    <span class="material-symbols-rounded" style="font-size:18px">format_list_numbered</span>
+                  </button>
+                  <button class="toolbar-btn" data-action="table" title="表格">
+                    <span class="material-symbols-rounded" style="font-size:18px">table_chart</span>
+                  </button>
+                  <button class="toolbar-btn" data-action="hr" title="分割线">
+                    <span class="material-symbols-rounded" style="font-size:18px">horizontal_rule</span>
+                  </button>
+                  <span class="toolbar-sep"></span>
+                  <button class="toolbar-btn" data-action="emoji" title="表情 / 颜文字" id="btn-emoji">
+                    <span class="material-symbols-rounded" style="font-size:18px">mood</span>
+                  </button>
+                  <button class="toolbar-btn" data-action="find" title="查找 (Ctrl+F)" id="btn-find">
+                    <span class="material-symbols-rounded" style="font-size:18px">search</span>
+                  </button>
+                  <button class="toolbar-btn" data-action="fullscreen" title="全屏 (Ctrl+Shift+F)" id="btn-fullscreen">
+                    <span class="material-symbols-rounded" style="font-size:18px">fullscreen</span>
+                  </button>
+                </div>
+                <textarea id="editor-content" placeholder="在这里写下你的文章内容（支持 Markdown）…"></textarea>
+                <div class="editor-status-bar">
+                  <span id="editor-word-count">0 字 · 0 行</span>
+                  <span id="editor-cursor-pos">行 1, 列 1</span>
+                </div>
+              </div>
+              <div class="editor-pane preview-pane hidden" id="editor-preview-pane">
+                <div id="editor-preview" class="markdown-body"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Comments -->
+      <section id="page-comments" class="page hidden">
+        <div class="page-header">
+          <h1>评论管理</h1>
+          <div class="page-actions">
+            <button id="btn-refresh-comments" class="btn-outlined">
+              <span class="material-symbols-rounded">refresh</span>
+              刷新
+            </button>
+          </div>
+        </div>
+        <div id="comments-list" class="comments-container"></div>
+      </section>
+
+      <!-- Page Management -->
+      <section id="page-pages" class="page hidden">
+        <div class="page-header">
+          <h1>页面管理</h1>
+          <div class="page-actions">
+            <button id="btn-pages-add" class="btn-outlined hidden">
+              <span class="material-symbols-rounded">add</span>
+              新增条目
+            </button>
+            <button id="btn-pages-duplicate" class="btn-outlined hidden">
+              <span class="material-symbols-rounded">content_copy</span>
+              复制
+            </button>
+            <button id="btn-pages-move-up" class="btn-outlined hidden">
+              <span class="material-symbols-rounded">arrow_upward</span>
+              上移
+            </button>
+            <button id="btn-pages-move-down" class="btn-outlined hidden">
+              <span class="material-symbols-rounded">arrow_downward</span>
+              下移
+            </button>
+            <button id="btn-pages-delete" class="btn-outlined btn-danger-outline hidden">
+              <span class="material-symbols-rounded">delete</span>
+              删除
+            </button>
+            <button id="btn-pages-preview" class="btn-outlined hidden">
+              <span class="material-symbols-rounded">visibility</span>
+              预览
+            </button>
+            <button id="btn-pages-save" class="btn-primary">
+              <span class="material-symbols-rounded">save</span>
+              保存
+            </button>
+          </div>
+        </div>
+
+        <div class="managed-pages-layout">
+          <aside class="managed-pages-sidebar">
+            <div class="settings-card managed-pages-nav-card">
+              <h3>资源列表</h3>
+              <p class="form-hint">用于管理 About、友链、项目、技能与时间线等页面内容。</p>
+              <div id="managed-pages-list" class="managed-pages-list"></div>
+            </div>
+          </aside>
+
+          <div class="managed-pages-main">
+            <div id="managed-page-meta-card" class="settings-card managed-pages-meta-card hidden">
+              <div class="managed-page-meta-top">
+                <div>
+                  <h3 id="managed-page-title">未选择资源</h3>
+                  <p id="managed-page-description" class="form-hint"></p>
+                </div>
+                <div class="managed-page-badges">
+                  <span id="managed-page-category" class="category-chip"></span>
+                  <span id="managed-page-type" class="tag-chip"></span>
+                </div>
+              </div>
+              <code id="managed-page-path" class="managed-page-path"></code>
+            </div>
+
+            <div class="settings-card managed-pages-editor-card">
+              <div id="managed-page-empty" class="empty-state">
+                <span class="material-symbols-rounded">edit_document</span>
+                <p>请选择左侧资源开始编辑</p>
+              </div>
+
+              <div id="managed-markdown-wrap" class="managed-page-editor-wrap hidden">
+                <textarea id="managed-page-content" class="managed-page-textarea" placeholder="请选择资源后开始编辑…"></textarea>
+
+                <div id="managed-page-preview-wrap" class="managed-page-preview hidden">
+                  <div id="managed-page-preview" class="markdown-body"></div>
+                </div>
+              </div>
+
+              <div id="managed-collection-wrap" class="managed-collection-wrap hidden">
+                <div class="managed-collection-layout">
+                  <aside class="managed-collection-sidebar">
+                    <div class="managed-collection-sidebar-top">
+                      <h3 id="managed-collection-heading">条目列表</h3>
+                      <span id="managed-collection-count" class="tag-chip">0 项</span>
+                    </div>
+                    <div id="managed-collection-list" class="managed-collection-list"></div>
+                  </aside>
+
+                  <div class="managed-collection-editor">
+                    <div id="managed-collection-editor-empty" class="empty-state hidden">
+                      <span class="material-symbols-rounded">list_alt</span>
+                      <p>请选择或新增一个条目开始编辑</p>
+                    </div>
+                    <form id="managed-collection-form" class="managed-collection-form hidden"></form>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Build -->
+      <section id="page-build" class="page hidden">
+        <div class="page-header">
+          <h1>构建部署</h1>
+        </div>
+        <div class="build-panel">
+          <div class="build-status-card">
+            <div class="build-status-header">
+              <span class="material-symbols-rounded build-icon" id="build-icon">rocket_launch</span>
+              <div>
+                <h2 id="build-status-text">就绪</h2>
+                <p id="build-last-time">尚无构建记录</p>
+              </div>
+            </div>
+            <div class="build-actions">
+              <label class="switch-label cdn-toggle" title="构建成功后自动刷新 CDN 缓存">
+                <input type="checkbox" id="auto-cdn" checked>
+                <span>自动刷新 CDN</span>
+              </label>
+              <button id="btn-build" class="btn-primary build-btn">
+                <span class="material-symbols-rounded">play_arrow</span>
+                开始构建
+              </button>
+            </div>
+          </div>
+
+          <!-- CDN 状态卡片 -->
+          <div class="cdn-status-card" id="cdn-status-card">
+            <div class="cdn-status-header">
+              <span class="material-symbols-rounded cdn-icon" id="cdn-icon">cloud_sync</span>
+              <div>
+                <h3 id="cdn-status-text">CDN 就绪</h3>
+                <p id="cdn-status-detail">构建成功后将自动刷新</p>
+              </div>
+            </div>
+            <button id="btn-cdn-refresh" class="btn-outlined compact">
+              <span class="material-symbols-rounded">refresh</span>
+              手动刷新 CDN
+            </button>
+          </div>
+
+          <div class="build-log-card">
+            <h3>构建日志</h3>
+            <pre id="build-log" class="build-log">等待构建…</pre>
+          </div>
+          <div class="build-log-card" id="cdn-log-card">
+            <h3>CDN 日志</h3>
+            <pre id="cdn-log" class="build-log cdn-log">等待 CDN 操作…</pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- Settings -->
+      <section id="page-settings" class="page hidden">
+        <div class="page-header">
+          <h1>设置</h1>
+        </div>
+
+        <!-- Settings Tabs -->
+        <div class="settings-tabs">
+          <button class="settings-tab active" data-tab="users">
+            <span class="material-symbols-rounded">group</span>
+            用户管理
+          </button>
+          <button class="settings-tab" data-tab="login-history">
+            <span class="material-symbols-rounded">history</span>
+            登录日志
+          </button>
+          <button class="settings-tab" data-tab="operation-logs">
+            <span class="material-symbols-rounded">receipt_long</span>
+            操作日志
+          </button>
+          <button class="settings-tab" data-tab="avatar">
+            <span class="material-symbols-rounded">account_circle</span>
+            头像设置
+          </button>
+        </div>
+
+        <!-- Tab: Users -->
+        <div class="settings-panel" id="tab-users">
+          <div class="settings-card">
+            <h3>新增管理用户</h3>
+            <form id="add-user-form" class="add-user-form">
+              <div class="fm-row">
+                <div class="fm-group">
+                  <label>用户名</label>
+                  <input type="text" id="new-username" placeholder="英文/数字/下划线" required>
+                </div>
+                <div class="fm-group">
+                  <label>昵称</label>
+                  <input type="text" id="new-nickname" placeholder="显示名称">
+                </div>
+              </div>
+              <div class="fm-group">
+                <label>密码</label>
+                <input type="password" id="new-password" placeholder="至少6位" required>
+              </div>
+              <button type="submit" class="btn-primary compact" style="width:auto;">
+                <span class="material-symbols-rounded">person_add</span>
+                添加用户
+              </button>
+            </form>
+          </div>
+          <div class="settings-card">
+            <h3>现有用户</h3>
+            <div id="users-list" class="users-list"></div>
+          </div>
+        </div>
+
+        <!-- Tab: Login History -->
+        <div class="settings-panel hidden" id="tab-login-history">
+          <div class="settings-card">
+            <div class="log-table-header">
+              <h3>登录历史</h3>
+              <div class="log-pagination" id="login-pagination"></div>
+            </div>
+            <div id="login-history-list" class="log-table-container"></div>
+          </div>
+        </div>
+
+        <!-- Tab: Operation Logs -->
+        <div class="settings-panel hidden" id="tab-operation-logs">
+          <div class="settings-card">
+            <div class="log-table-header">
+              <h3>操作日志</h3>
+              <div class="log-pagination" id="logs-pagination"></div>
+            </div>
+            <div id="operation-logs-list" class="log-table-container"></div>
+          </div>
+        </div>
+
+        <!-- Tab: Avatar -->
+        <div class="settings-panel hidden" id="tab-avatar">
+          <div class="settings-card avatar-settings">
+            <h3>头像设置</h3>
+            <div class="avatar-upload-area">
+              <div class="avatar-preview" id="avatar-preview">
+                <span class="material-symbols-rounded">person</span>
+              </div>
+              <div class="avatar-upload-controls">
+                <p class="form-hint">支持 JPG / PNG / GIF / WebP，最大 5MB</p>
+                <input type="file" id="avatar-input" accept="image/*" hidden>
+                <button id="btn-choose-avatar" class="btn-outlined">
+                  <span class="material-symbols-rounded">upload</span>
+                  选择头像
+                </button>
+                <button id="btn-upload-avatar" class="btn-primary compact hidden" style="width:auto;">
+                  <span class="material-symbols-rounded">cloud_upload</span>
+                  上传保存
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <!-- Confirm Dialog -->
+  <div id="confirm-dialog" class="dialog-overlay hidden">
+    <div class="dialog-card">
+      <h3 id="confirm-title">确认</h3>
+      <p id="confirm-message"></p>
+      <div class="dialog-actions">
+        <button id="confirm-cancel" class="btn-text">取消</button>
+        <button id="confirm-ok" class="btn-primary compact">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/app.js"></script>
+  <script src="/js/editor.js"></script>
+  <script src="/js/comments.js"></script>
+</body>
+
+</html>
