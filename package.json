@@ -6,7 +6,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "test": "node --test"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -16,7 +17,7 @@
     "gray-matter": "^4.0.3",
     "jsonwebtoken": "^9.0.2",
     "marked": "^15.0.0",
-    "multer": "^1.4.5-lts.1",
+    "multer": "^2.3.0",
     "node-fetch": "^3.3.2",
     "pg": "^8.13.0"
   }

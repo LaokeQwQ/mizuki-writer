@@ -1,23 +1,20 @@
 import express from 'express';
-import jwt from 'jsonwebtoken';
 import fs from 'fs';
 import path from 'path';
 import { logAction } from '../lib/logger.js';
+import { authMiddleware, requireRole } from '../lib/auth.js';
+import { getClientIp, sendInternalError } from '../lib/http.js';
+import { parseArrayLiteral } from '../lib/safe-literal.js';
 
 const router = express.Router();
-
-function authMiddleware(req, res, next) {
-    const token = req.headers.authorization?.replace('Bearer ', '');
-    if (!token) return res.status(401).json({ error: '未授权' });
-    try {
-        req.user = jwt.verify(token, process.env.JWT_SECRET);
-        next();
-    } catch (e) {
-        res.status(401).json({ error: 'Token 无效' });
-    }
-}
+const MAX_MARKDOWN_BYTES = 1_000_000;
+const MAX_COLLECTION_ITEMS = 1_000;
+const MAX_COLLECTION_SOURCE_BYTES = 5 * 1024 * 1024;
+const MAX_FIELD_BYTES = 10_000;
+const resourceLocks = new Map();
 
 router.use(authMiddleware);
+router.use(requireRole('admin', 'editor'));
 
 function getBlogDir() {
     const blogDir = process.env.BLOG_DIR;
@@ -86,11 +83,47 @@ function getResourceById(blogDir, id) {
     return getResourceDefinitions(blogDir).find((item) => item.id === id);
 }
 
+function isPathInside(basePath, targetPath) {
+    const relative = path.relative(basePath, targetPath);
+    return relative === ''
+        || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+function pathExists(filePath) {
+    try {
+        fs.lstatSync(filePath);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 function ensureManagedPath(blogDir, targetPath) {
     const resolvedBlogDir = path.resolve(blogDir);
     const resolvedTarget = path.resolve(targetPath);
     const relative = path.relative(resolvedBlogDir, resolvedTarget);
     if (relative.startsWith('..') || path.isAbsolute(relative)) {
+        throw new Error('目标文件路径不安全');
+    }
+
+    let realBlogDir;
+    try {
+        realBlogDir = fs.realpathSync(resolvedBlogDir);
+    } catch {
+        throw new Error('博客目录不存在或路径不安全');
+    }
+
+    let existingPath = resolvedTarget;
+    while (!pathExists(existingPath)) {
+        const parent = path.dirname(existingPath);
+        if (parent === existingPath) throw new Error('目标文件路径不安全');
+        existingPath = parent;
+    }
+    const realExistingPath = fs.realpathSync(existingPath);
+    if (!isPathInside(realBlogDir, realExistingPath)) {
+        throw new Error('目标文件路径不安全');
+    }
+    if (pathExists(resolvedTarget) && fs.lstatSync(resolvedTarget).isSymbolicLink()) {
         throw new Error('目标文件路径不安全');
     }
 }
@@ -102,35 +135,88 @@ function ensureString(value, fieldName) {
     return value;
 }
 
+function normalizeRequiredString(value, fieldName, maxBytes = MAX_FIELD_BYTES) {
+    const normalized = ensureString(value, fieldName).trim();
+    if (!normalized) throw new Error(`${fieldName} 不能为空`);
+    if (Buffer.byteLength(normalized, 'utf8') > maxBytes) {
+        throw new Error(`${fieldName} 文本过长`);
+    }
+    return normalized;
+}
+
+function normalizeOptionalString(value, fieldName, maxBytes = MAX_FIELD_BYTES) {
+    if (value === undefined || value === null || value === '') return undefined;
+    const normalized = ensureString(value, fieldName).trim();
+    if (!normalized) return undefined;
+    if (Buffer.byteLength(normalized, 'utf8') > maxBytes) {
+        throw new Error(`${fieldName} 文本过长`);
+    }
+    return normalized;
+}
+
+function normalizeBoolean(value, fieldName, fallback = undefined) {
+    if (value === undefined || value === null) return fallback;
+    if (typeof value !== 'boolean') throw new Error(`${fieldName} 必须是布尔值`);
+    return value;
+}
+
+function normalizeNonNegativeInteger(value, fieldName) {
+    let normalized = value;
+    if (typeof value === 'string' && /^\d+$/.test(value.trim())) normalized = Number(value.trim());
+    if (!Number.isSafeInteger(normalized) || normalized < 0) {
+        throw new Error(`${fieldName} 必须是非负整数`);
+    }
+    return normalized;
+}
+
+function isValidationError(error) {
+    return typeof error?.message === 'string'
+        && /(?:必须|无效|不能为空|至少|不能重复|超出限制|过长|格式|应为)/.test(error.message);
+}
+
 function isValidHttpUrl(value) {
+    if (typeof value !== 'string' || /[\u0000-\u0020\u007f\\]/.test(value)) return false;
     try {
         const url = new URL(value);
-        return url.protocol === 'http:' || url.protocol === 'https:';
+        return (url.protocol === 'http:' || url.protocol === 'https:')
+            && !url.username && !url.password;
     } catch {
         return false;
     }
 }
 
 function isValidImagePath(value) {
-    return typeof value === 'string' && (value === '' || value.startsWith('/') || isValidHttpUrl(value));
+    return typeof value === 'string'
+        && !/[\u0000-\u001f\u007f\\]/.test(value)
+        && (value === '' || (value.startsWith('/') && !value.startsWith('//')) || isValidHttpUrl(value));
 }
 
 function isValidDateString(value) {
-    return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value);
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const [year, month, day] = value.split('-').map(Number);
+    const date = new Date(Date.UTC(year, month - 1, day));
+    return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
 }
 
 function isValidColorString(value) {
-    return typeof value === 'string' && value.trim().length > 0;
+    return typeof value === 'string'
+        && value.trim().length > 0
+        && Buffer.byteLength(value, 'utf8') <= 128
+        && !/[\u0000-\u001f\u007f]/.test(value)
+        && !/[{};"'`<>\\]/.test(value)
+        && !/url\s*\(|expression\s*\(/i.test(value);
 }
 
 function parseStringArray(value, fieldName, { allowEmpty = true } = {}) {
     if (!Array.isArray(value)) {
         throw new Error(`${fieldName} 必须是数组`);
     }
+    if (value.length > 500) throw new Error(`${fieldName} 条目数量超出限制`);
     const normalized = value.map((item) => {
         if (typeof item !== 'string') {
             throw new Error(`${fieldName} 中的每一项都必须是字符串`);
         }
+        if (Buffer.byteLength(item, 'utf8') > 500) throw new Error(`${fieldName} 中的文本过长`);
         return item.trim();
     }).filter(Boolean);
 
@@ -233,7 +319,7 @@ function extractExportedArray(source, exportName) {
 
     const arrayEnd = findMatchingBracket(source, arrayStart);
     const arrayLiteral = source.slice(arrayStart, arrayEnd + 1);
-    const items = Function(`"use strict"; return (${arrayLiteral});`)();
+    const items = parseArrayLiteral(arrayLiteral);
 
     if (!Array.isArray(items)) {
         throw new Error(`${exportName} 不是数组`);
@@ -270,15 +356,23 @@ function formatTsValue(value, indentLevel = 0) {
 }
 
 function writeFileAtomically(filePath, content) {
-    const tempPath = `${filePath}.tmp-${Date.now()}`;
-    fs.writeFileSync(tempPath, content, 'utf-8');
-    fs.renameSync(tempPath, filePath);
+    const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    try {
+        fs.writeFileSync(tempPath, content, 'utf-8');
+        fs.renameSync(tempPath, filePath);
+    } finally {
+        try {
+            if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+        } catch {
+            // Preserve the original write error if cleanup itself fails.
+        }
+    }
 }
 
 function backupOriginalFile(blogDir, filePath, resourceId) {
     const backupDir = path.join(blogDir, '.admin-backups', 'pages');
     fs.mkdirSync(backupDir, { recursive: true });
-    const backupPath = path.join(backupDir, `${resourceId}-${Date.now()}.bak`);
+    const backupPath = path.join(backupDir, `${resourceId}-${Date.now()}-${Math.random().toString(16).slice(2)}.bak`);
     fs.copyFileSync(filePath, backupPath);
     return backupPath;
 }
@@ -290,23 +384,14 @@ function validateFriendsItems(items) {
         }
 
         const normalized = {
-            id: Number(item.id),
-            title: ensureString(item.title, `第 ${index + 1} 条友链标题`).trim(),
-            imgurl: ensureString(item.imgurl, `第 ${index + 1} 条友链头像`).trim(),
-            desc: ensureString(item.desc, `第 ${index + 1} 条友链描述`).trim(),
-            siteurl: ensureString(item.siteurl, `第 ${index + 1} 条友链地址`).trim(),
+            id: normalizeNonNegativeInteger(item.id, `第 ${index + 1} 条友链 ID`),
+            title: normalizeRequiredString(item.title, `第 ${index + 1} 条友链标题`, 500),
+            imgurl: normalizeOptionalString(item.imgurl, `第 ${index + 1} 条友链头像`, 2_000) || '',
+            desc: normalizeRequiredString(item.desc, `第 ${index + 1} 条友链描述`, 5_000),
+            siteurl: normalizeRequiredString(item.siteurl, `第 ${index + 1} 条友链地址`, 2_000),
             tags: parseStringArray(item.tags ?? [], `第 ${index + 1} 条友链标签`),
         };
 
-        if (!Number.isInteger(normalized.id) || normalized.id < 0) {
-            throw new Error(`第 ${index + 1} 条友链 ID 必须是非负整数`);
-        }
-        if (!normalized.title) {
-            throw new Error(`第 ${index + 1} 条友链标题不能为空`);
-        }
-        if (!normalized.desc) {
-            throw new Error(`第 ${index + 1} 条友链描述不能为空`);
-        }
         if (!isValidImagePath(normalized.imgurl)) {
             throw new Error(`第 ${index + 1} 条友链头像链接无效`);
         }
@@ -328,26 +413,23 @@ function validateProjectsItems(items) {
         }
 
         const normalized = {
-            id: ensureString(item.id, `第 ${index + 1} 个项目 ID`).trim(),
-            title: ensureString(item.title, `第 ${index + 1} 个项目标题`).trim(),
-            description: ensureString(item.description, `第 ${index + 1} 个项目描述`).trim(),
-            image: ensureString(item.image ?? '', `第 ${index + 1} 个项目图片`).trim(),
-            category: ensureString(item.category, `第 ${index + 1} 个项目分类`).trim(),
+            id: normalizeRequiredString(item.id, `第 ${index + 1} 个项目 ID`, 256),
+            title: normalizeRequiredString(item.title, `第 ${index + 1} 个项目标题`, 500),
+            description: normalizeRequiredString(item.description, `第 ${index + 1} 个项目描述`, 5_000),
+            image: normalizeOptionalString(item.image, `第 ${index + 1} 个项目图片`, 2_000) || '',
+            category: normalizeRequiredString(item.category, `第 ${index + 1} 个项目分类`, 64),
             techStack: parseStringArray(item.techStack ?? [], `第 ${index + 1} 个项目技术栈`, { allowEmpty: false }),
-            status: ensureString(item.status, `第 ${index + 1} 个项目状态`).trim(),
-            liveDemo: item.liveDemo ? ensureString(item.liveDemo, `第 ${index + 1} 个项目 LiveDemo`).trim() : undefined,
-            sourceCode: item.sourceCode ? ensureString(item.sourceCode, `第 ${index + 1} 个项目源码`).trim() : undefined,
-            visitUrl: item.visitUrl ? ensureString(item.visitUrl, `第 ${index + 1} 个项目访问链接`).trim() : undefined,
-            startDate: ensureString(item.startDate, `第 ${index + 1} 个项目开始时间`).trim(),
-            endDate: item.endDate ? ensureString(item.endDate, `第 ${index + 1} 个项目结束时间`).trim() : undefined,
-            featured: Boolean(item.featured),
+            status: normalizeRequiredString(item.status, `第 ${index + 1} 个项目状态`, 32),
+            liveDemo: normalizeOptionalString(item.liveDemo, `第 ${index + 1} 个项目 LiveDemo`, 2_000),
+            sourceCode: normalizeOptionalString(item.sourceCode, `第 ${index + 1} 个项目源码`, 2_000),
+            visitUrl: normalizeOptionalString(item.visitUrl, `第 ${index + 1} 个项目访问链接`, 2_000),
+            startDate: normalizeRequiredString(item.startDate, `第 ${index + 1} 个项目开始时间`, 32),
+            endDate: normalizeOptionalString(item.endDate, `第 ${index + 1} 个项目结束时间`, 32),
+            featured: normalizeBoolean(item.featured, `第 ${index + 1} 个项目精选`, false),
             tags: parseStringArray(item.tags ?? [], `第 ${index + 1} 个项目标签`),
-            showImage: item.showImage === undefined ? undefined : Boolean(item.showImage),
+            showImage: normalizeBoolean(item.showImage, `第 ${index + 1} 个项目显示图片`),
         };
 
-        if (!normalized.id) throw new Error(`第 ${index + 1} 个项目 ID 不能为空`);
-        if (!normalized.title) throw new Error(`第 ${index + 1} 个项目标题不能为空`);
-        if (!normalized.description) throw new Error(`第 ${index + 1} 个项目描述不能为空`);
         if (!validCategories.has(normalized.category)) {
             throw new Error(`第 ${index + 1} 个项目分类无效`);
         }
@@ -382,37 +464,35 @@ function validateSkillsItems(items) {
             throw new Error(`第 ${index + 1} 个技能项格式无效`);
         }
 
-        const years = Number(item.experience?.years ?? 0);
-        const months = Number(item.experience?.months ?? 0);
+        if (item.experience !== undefined && item.experience !== null
+            && (typeof item.experience !== 'object' || Array.isArray(item.experience))) {
+            throw new Error(`第 ${index + 1} 个技能经验格式无效`);
+        }
+        const experience = item.experience || {};
+        const years = normalizeNonNegativeInteger(experience.years ?? 0, `第 ${index + 1} 个技能经验年数`);
+        const months = normalizeNonNegativeInteger(experience.months ?? 0, `第 ${index + 1} 个技能经验月数`);
 
         const normalized = {
-            id: ensureString(item.id, `第 ${index + 1} 个技能 ID`).trim(),
-            name: ensureString(item.name, `第 ${index + 1} 个技能名称`).trim(),
-            description: ensureString(item.description, `第 ${index + 1} 个技能描述`).trim(),
-            icon: ensureString(item.icon, `第 ${index + 1} 个技能图标`).trim(),
-            category: ensureString(item.category, `第 ${index + 1} 个技能分类`).trim(),
-            level: ensureString(item.level, `第 ${index + 1} 个技能等级`).trim(),
+            id: normalizeRequiredString(item.id, `第 ${index + 1} 个技能 ID`, 256),
+            name: normalizeRequiredString(item.name, `第 ${index + 1} 个技能名称`, 500),
+            description: normalizeRequiredString(item.description, `第 ${index + 1} 个技能描述`, 5_000),
+            icon: normalizeRequiredString(item.icon, `第 ${index + 1} 个技能图标`, 256),
+            category: normalizeRequiredString(item.category, `第 ${index + 1} 个技能分类`, 64),
+            level: normalizeRequiredString(item.level, `第 ${index + 1} 个技能等级`, 64),
             experience: {
                 years,
                 months,
             },
             projects: parseStringArray(item.projects ?? [], `第 ${index + 1} 个技能项目`),
             certifications: parseStringArray(item.certifications ?? [], `第 ${index + 1} 个技能证书`),
-            color: item.color ? ensureString(item.color, `第 ${index + 1} 个技能颜色`).trim() : undefined,
+            color: normalizeOptionalString(item.color, `第 ${index + 1} 个技能颜色`, 128),
         };
 
-        if (!normalized.id) throw new Error(`第 ${index + 1} 个技能 ID 不能为空`);
-        if (!normalized.name) throw new Error(`第 ${index + 1} 个技能名称不能为空`);
-        if (!normalized.description) throw new Error(`第 ${index + 1} 个技能描述不能为空`);
-        if (!normalized.icon) throw new Error(`第 ${index + 1} 个技能图标不能为空`);
         if (!validCategories.has(normalized.category)) {
             throw new Error(`第 ${index + 1} 个技能分类无效`);
         }
         if (!validLevels.has(normalized.level)) {
             throw new Error(`第 ${index + 1} 个技能等级无效`);
-        }
-        if (!Number.isInteger(years) || years < 0 || !Number.isInteger(months) || months < 0) {
-            throw new Error(`第 ${index + 1} 个技能经验必须是非负整数`);
         }
         if (normalized.color && !isValidColorString(normalized.color)) {
             throw new Error(`第 ${index + 1} 个技能颜色无效`);
@@ -431,42 +511,43 @@ function validateTimelineItems(items) {
             throw new Error(`第 ${index + 1} 条时间线格式无效`);
         }
 
-        const links = Array.isArray(item.links) ? item.links.map((link, linkIndex) => {
+        if (item.links !== undefined && item.links !== null && !Array.isArray(item.links)) {
+            throw new Error(`第 ${index + 1} 条时间线链接必须是数组`);
+        }
+        const rawLinks = item.links ?? [];
+        if (rawLinks.length > 100) throw new Error(`第 ${index + 1} 条时间线链接数量超出限制`);
+        const links = rawLinks.map((link, linkIndex) => {
             if (!link || typeof link !== 'object' || Array.isArray(link)) {
                 throw new Error(`第 ${index + 1} 条时间线的第 ${linkIndex + 1} 个链接格式无效`);
             }
             const normalizedLink = {
-                name: ensureString(link.name, `第 ${index + 1} 条时间线链接名称`).trim(),
-                url: ensureString(link.url, `第 ${index + 1} 条时间线链接地址`).trim(),
-                type: ensureString(link.type, `第 ${index + 1} 条时间线链接类型`).trim(),
+                name: normalizeRequiredString(link.name, `第 ${index + 1} 条时间线链接名称`, 500),
+                url: normalizeRequiredString(link.url, `第 ${index + 1} 条时间线链接地址`, 2_000),
+                type: normalizeRequiredString(link.type, `第 ${index + 1} 条时间线链接类型`, 32),
             };
-            if (!normalizedLink.name) throw new Error(`第 ${index + 1} 条时间线链接名称不能为空`);
             if (!isValidHttpUrl(normalizedLink.url)) throw new Error(`第 ${index + 1} 条时间线链接地址无效`);
             if (!validLinkTypes.has(normalizedLink.type)) throw new Error(`第 ${index + 1} 条时间线链接类型无效`);
             return normalizedLink;
-        }) : [];
+        });
 
         const normalized = {
-            id: ensureString(item.id, `第 ${index + 1} 条时间线 ID`).trim(),
-            title: ensureString(item.title, `第 ${index + 1} 条时间线标题`).trim(),
-            description: ensureString(item.description, `第 ${index + 1} 条时间线描述`).trim(),
-            type: ensureString(item.type, `第 ${index + 1} 条时间线类型`).trim(),
-            startDate: ensureString(item.startDate, `第 ${index + 1} 条时间线开始时间`).trim(),
-            endDate: item.endDate ? ensureString(item.endDate, `第 ${index + 1} 条时间线结束时间`).trim() : undefined,
-            location: item.location ? ensureString(item.location, `第 ${index + 1} 条时间线地点`).trim() : undefined,
-            organization: item.organization ? ensureString(item.organization, `第 ${index + 1} 条时间线组织`).trim() : undefined,
-            position: item.position ? ensureString(item.position, `第 ${index + 1} 条时间线职位`).trim() : undefined,
+            id: normalizeRequiredString(item.id, `第 ${index + 1} 条时间线 ID`, 256),
+            title: normalizeRequiredString(item.title, `第 ${index + 1} 条时间线标题`, 500),
+            description: normalizeRequiredString(item.description, `第 ${index + 1} 条时间线描述`, 5_000),
+            type: normalizeRequiredString(item.type, `第 ${index + 1} 条时间线类型`, 64),
+            startDate: normalizeRequiredString(item.startDate, `第 ${index + 1} 条时间线开始时间`, 32),
+            endDate: normalizeOptionalString(item.endDate, `第 ${index + 1} 条时间线结束时间`, 32),
+            location: normalizeOptionalString(item.location, `第 ${index + 1} 条时间线地点`, 500),
+            organization: normalizeOptionalString(item.organization, `第 ${index + 1} 条时间线组织`, 500),
+            position: normalizeOptionalString(item.position, `第 ${index + 1} 条时间线职位`, 500),
             skills: parseStringArray(item.skills ?? [], `第 ${index + 1} 条时间线技能`),
             achievements: parseStringArray(item.achievements ?? [], `第 ${index + 1} 条时间线成就`),
             links,
-            icon: item.icon ? ensureString(item.icon, `第 ${index + 1} 条时间线图标`).trim() : undefined,
-            color: item.color ? ensureString(item.color, `第 ${index + 1} 条时间线颜色`).trim() : undefined,
-            featured: Boolean(item.featured),
+            icon: normalizeOptionalString(item.icon, `第 ${index + 1} 条时间线图标`, 256),
+            color: normalizeOptionalString(item.color, `第 ${index + 1} 条时间线颜色`, 128),
+            featured: normalizeBoolean(item.featured, `第 ${index + 1} 条时间线精选`, false),
         };
 
-        if (!normalized.id) throw new Error(`第 ${index + 1} 条时间线 ID 不能为空`);
-        if (!normalized.title) throw new Error(`第 ${index + 1} 条时间线标题不能为空`);
-        if (!normalized.description) throw new Error(`第 ${index + 1} 条时间线描述不能为空`);
         if (!validTypes.has(normalized.type)) throw new Error(`第 ${index + 1} 条时间线类型无效`);
         if (!isValidDateString(normalized.startDate)) {
             throw new Error(`第 ${index + 1} 条时间线开始时间格式无效，应为 YYYY-MM-DD`);
@@ -486,26 +567,65 @@ function validateCollectionItems(resourceId, items) {
     if (!Array.isArray(items)) {
         throw new Error('items 必须是数组');
     }
+    if (items.length > MAX_COLLECTION_ITEMS) {
+        throw new Error(`items 最多允许 ${MAX_COLLECTION_ITEMS} 条`);
+    }
 
+    let normalized;
     switch (resourceId) {
         case 'friends-data':
-            return validateFriendsItems(items);
+            normalized = validateFriendsItems(items);
+            break;
         case 'projects-data':
-            return validateProjectsItems(items);
+            normalized = validateProjectsItems(items);
+            break;
         case 'skills-data':
-            return validateSkillsItems(items);
+            normalized = validateSkillsItems(items);
+            break;
         case 'timeline-data':
-            return validateTimelineItems(items);
+            normalized = validateTimelineItems(items);
+            break;
         default:
             throw new Error('不支持的数据资源');
+    }
+    const ids = new Set();
+    for (const item of normalized) {
+        const id = String(item.id);
+        if (ids.has(id)) throw new Error('条目 ID 不能重复');
+        ids.add(id);
+    }
+    if (Buffer.byteLength(JSON.stringify(normalized), 'utf8') > MAX_COLLECTION_SOURCE_BYTES) {
+        throw new Error('items 数据内容超出限制');
+    }
+    return normalized;
+}
+
+async function withResourceLock(key, operation) {
+    const previous = resourceLocks.get(key) || Promise.resolve();
+    let release;
+    const current = new Promise((resolve) => { release = resolve; });
+    resourceLocks.set(key, current);
+    await previous;
+    try {
+        return await operation();
+    } finally {
+        release();
+        if (resourceLocks.get(key) === current) resourceLocks.delete(key);
     }
 }
 
 function saveCollectionResource(resource, items, blogDir) {
+    const stats = fs.statSync(resource.filePath);
+    if (!stats.isFile() || stats.size > MAX_COLLECTION_SOURCE_BYTES) {
+        throw new Error('数据源文件过大或格式无效');
+    }
     const source = fs.readFileSync(resource.filePath, 'utf-8');
     const { arrayStart, arrayEnd } = extractExportedArray(source, resource.exportName);
     const newArrayLiteral = formatTsValue(items, 0);
     const newSource = `${source.slice(0, arrayStart)}${newArrayLiteral}${source.slice(arrayEnd + 1)}`;
+    if (Buffer.byteLength(newSource, 'utf8') > MAX_COLLECTION_SOURCE_BYTES) {
+        throw new Error('数据源文件过大或格式无效');
+    }
 
     const backupPath = backupOriginalFile(blogDir, resource.filePath, resource.id);
     writeFileAtomically(resource.filePath, newSource);
@@ -534,7 +654,7 @@ router.get('/', (req, res) => {
         }));
         res.json({ items });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        sendInternalError(res, err, '读取页面资源列表失败');
     }
 });
 
@@ -550,6 +670,9 @@ router.get('/:id', (req, res) => {
 
         if (resource.mode === 'markdown') {
             const exists = fs.existsSync(resource.filePath);
+            if (exists && fs.statSync(resource.filePath).size > MAX_MARKDOWN_BYTES) {
+                return res.status(413).json({ error: 'Markdown 内容不能超过 1MB' });
+            }
             const content = exists ? fs.readFileSync(resource.filePath, 'utf-8') : '';
             return res.json({
                 id: resource.id,
@@ -563,6 +686,10 @@ router.get('/:id', (req, res) => {
             });
         }
 
+        const stats = fs.statSync(resource.filePath);
+        if (!stats.isFile() || stats.size > MAX_COLLECTION_SOURCE_BYTES) {
+            return res.status(413).json({ error: '数据源文件过大' });
+        }
         const source = fs.readFileSync(resource.filePath, 'utf-8');
         const { items } = extractExportedArray(source, resource.exportName);
         return res.json({
@@ -576,7 +703,7 @@ router.get('/:id', (req, res) => {
             count: items.length,
         });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        sendInternalError(res, err, '读取页面资源详情失败');
     }
 });
 
@@ -590,17 +717,20 @@ router.put('/:id', async (req, res) => {
 
         ensureManagedPath(blogDir, resource.filePath);
 
-        const ip = req.headers['x-forwarded-for'] || req.connection.remoteAddress;
+        const ip = getClientIp(req);
         let backupPath = null;
 
         if (resource.mode === 'markdown') {
-            if (typeof req.body.content !== 'string') {
+            if (typeof req.body?.content !== 'string') {
                 return res.status(400).json({ error: 'content 必须是字符串' });
             }
-            backupPath = saveMarkdownResource(resource, req.body.content, blogDir);
+            if (Buffer.byteLength(req.body.content, 'utf8') > MAX_MARKDOWN_BYTES) {
+                return res.status(413).json({ error: 'Markdown 内容不能超过 1MB' });
+            }
+            backupPath = await withResourceLock(resource.filePath, () => saveMarkdownResource(resource, req.body.content, blogDir));
         } else {
-            const normalizedItems = validateCollectionItems(resource.id, req.body.items);
-            backupPath = saveCollectionResource(resource, normalizedItems, blogDir);
+            const normalizedItems = validateCollectionItems(resource.id, req.body?.items);
+            backupPath = await withResourceLock(resource.filePath, () => saveCollectionResource(resource, normalizedItems, blogDir));
         }
 
         await logAction(
@@ -619,7 +749,8 @@ router.put('/:id', async (req, res) => {
             backupPath: backupPath ? path.relative(blogDir, backupPath).replace(/\\/g, '/') : null,
         });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        if (isValidationError(err)) return res.status(400).json({ error: err.message });
+        sendInternalError(res, err, '保存页面资源失败');
     }
 });
 

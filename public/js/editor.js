@@ -5,6 +5,9 @@
 let editingSlug = null;
 let previewVisible = false;
 let previewDebounce = null;
+let editorLoadRequest = 0;
+let previewRequestId = 0;
+let previewController = null;
 let isFullscreen = false;
 let findBarVisible = false;
 let emojiPickerVisible = false;
@@ -22,6 +25,7 @@ const emojiData = {
 
 // ─── Init Editor ───────────────────────
 window.initEditor = async function (slug = null) {
+    const requestId = ++editorLoadRequest;
     editingSlug = slug;
     previewVisible = false;
     const previewPane = document.getElementById('editor-preview-pane');
@@ -51,15 +55,17 @@ window.initEditor = async function (slug = null) {
     // Populate category datalist
     try {
         const meta = await window.api('/posts/meta/tags-categories').catch(() => ({ tags: [], categories: [] }));
+        if (requestId !== editorLoadRequest) return;
         const datalist = document.getElementById('category-list');
-        datalist.innerHTML = meta.categories.map(c => `<option value="${c}">`).join('');
+        datalist.innerHTML = (meta.categories || []).map(c => `<option value="${window.escapeAttr(c)}">`).join('');
     } catch { }
 
     if (slug) {
         document.getElementById('editor-title').textContent = '编辑文章';
         document.getElementById('fm-slug').disabled = true;
         try {
-            const data = await window.api(`/posts/${slug}`);
+            const data = await window.api(`/posts/${encodeURIComponent(slug)}`);
+            if (requestId !== editorLoadRequest) return;
             const fm = data.frontmatter;
             document.getElementById('fm-title').value = fm.title || '';
             document.getElementById('fm-slug').value = slug;
@@ -73,6 +79,7 @@ window.initEditor = async function (slug = null) {
             document.getElementById('editor-content').value = data.content || '';
             updateStatusBar();
         } catch (err) {
+            if (requestId !== editorLoadRequest) return;
             window.showToast('加载文章失败: ' + err.message, 'error');
         }
     } else {
@@ -106,7 +113,7 @@ document.getElementById('btn-save').addEventListener('click', async () => {
 
     try {
         if (editingSlug) {
-            await window.api(`/posts/${editingSlug}`, {
+            await window.api(`/posts/${encodeURIComponent(editingSlug)}`, {
                 method: 'PUT',
                 body: JSON.stringify({ frontmatter, content }),
             });
@@ -120,7 +127,7 @@ document.getElementById('btn-save').addEventListener('click', async () => {
             editingSlug = slug;
             document.getElementById('fm-slug').disabled = true;
             document.getElementById('editor-title').textContent = '编辑文章';
-            location.hash = `#/edit/${slug}`;
+            location.hash = `#/edit/${encodeURIComponent(slug)}`;
         }
         window.postsCache = [];
 
@@ -147,6 +154,9 @@ document.getElementById('btn-preview-toggle').addEventListener('click', () => {
         btn.innerHTML = '<span class="material-symbols-rounded">edit</span> 编辑';
         updatePreview();
     } else {
+        previewRequestId++;
+        previewController?.abort();
+        previewController = null;
         previewPane.classList.add('hidden');
         btn.innerHTML = '<span class="material-symbols-rounded">visibility</span> 预览';
     }
@@ -162,11 +172,16 @@ document.getElementById('editor-content').addEventListener('input', () => {
 
 async function updatePreview() {
     const content = document.getElementById('editor-content').value;
+    const requestId = ++previewRequestId;
+    previewController?.abort();
+    previewController = new AbortController();
     try {
         const data = await window.api('/posts/preview', {
             method: 'POST',
             body: JSON.stringify({ content }),
+            signal: previewController.signal,
         });
+        if (requestId !== previewRequestId || !previewVisible) return;
         const previewEl = document.getElementById('editor-preview');
         previewEl.innerHTML = data.html;
         // Make preview elements clickable → jump to source line
@@ -178,7 +193,8 @@ async function updatePreview() {
                 jumpToSourceText(text);
             });
         });
-    } catch {
+    } catch (error) {
+        if (error?.name === 'AbortError' || requestId !== previewRequestId) return;
         document.getElementById('editor-preview').innerHTML = '<p style="color:red">预览加载失败</p>';
     }
 }
@@ -383,7 +399,7 @@ function renderEmojiGrid(category) {
     const items = emojiData[category] || [];
     const isKaomoji = category === '颜文字';
     return items.map(e =>
-        `<span class="emoji-item${isKaomoji ? ' kaomoji' : ''}" data-emoji="${e.replace(/"/g, '&quot;')}">${e}</span>`
+        `<span class="emoji-item${isKaomoji ? ' kaomoji' : ''}" data-emoji="${window.escapeAttr(e)}">${window.escapeHtml(e)}</span>`
     ).join('');
 }
 

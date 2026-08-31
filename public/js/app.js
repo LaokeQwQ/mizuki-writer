@@ -18,6 +18,7 @@ let managedPagesEventsBound = false;
 let managedCollectionItems = [];
 let currentManagedCollectionIndex = -1;
 let managedPagesDirty = false;
+let managedPageRequestId = 0;
 
 // ─── API Helper ────────────────────────
 async function api(endpoint, options = {}) {
@@ -200,9 +201,24 @@ function navigateToHash() {
     if (hash === '/' || hash === '') route = 'dashboard';
     else if (hash === '/posts') route = 'posts';
     else if (hash === '/new') route = 'new';
-    else if (hash.startsWith('/edit/')) { route = 'edit'; param = hash.slice(6); }
+    else if (hash.startsWith('/edit/')) {
+        route = 'edit';
+        try {
+            param = decodeURIComponent(hash.slice(6));
+        } catch {
+            route = 'dashboard';
+        }
+    }
     else if (hash === '/pages') route = 'pages';
-    else if (hash.startsWith('/pages/')) { route = 'pages'; param = decodeURIComponent(hash.slice(7)); }
+    else if (hash.startsWith('/pages/')) {
+        route = 'pages';
+        try {
+            param = decodeURIComponent(hash.slice(7));
+        } catch {
+            route = 'pages';
+            param = null;
+        }
+    }
     else if (hash === '/comments') route = 'comments';
     else if (hash === '/build') route = 'build';
     else if (hash === '/settings') route = 'settings';
@@ -291,13 +307,18 @@ function getGreeting() {
 // ─── Hitokoto API ──────────────────────
 async function loadHitokoto() {
     const el = document.getElementById('welcome-hitokoto');
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
     try {
-        const res = await fetch('https://v1.hitokoto.cn?c=a&c=b&c=c&c=d&c=k&encode=json');
+        const res = await fetch('https://v1.hitokoto.cn?c=a&c=b&c=c&c=d&c=k&encode=json', { signal: controller.signal });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         const from = data.from ? ` —— ${data.from}` : '';
         el.textContent = `「${data.hitokoto}」${from}`;
     } catch {
         el.textContent = '「代码就是诗，Bug 就是人生。」';
+    } finally {
+        clearTimeout(timeout);
     }
 }
 
@@ -319,8 +340,9 @@ async function loadDashboard() {
 
         // 头像
         const avatarEl = document.getElementById('welcome-avatar');
-        if (userProfile.avatar) {
-            avatarEl.innerHTML = `<img src="${escapeHtml(userProfile.avatar)}" alt="avatar">`;
+        const avatarSrc = safeImageUrl(userProfile.avatar);
+        if (avatarSrc) {
+            avatarEl.innerHTML = `<img src="${escapeAttr(avatarSrc)}" alt="avatar">`;
         } else {
             avatarEl.innerHTML = `<span class="material-symbols-rounded">person</span>`;
         }
@@ -355,7 +377,7 @@ async function loadDashboard() {
         }
 
         container.innerHTML = recent.map(post => `
-      <div class="recent-post-item" onclick="location.hash='#/edit/${post.slug}'">
+      <div class="recent-post-item" data-post-open="${escapeAttr(post.slug)}" role="button" tabindex="0">
         <div class="recent-post-info">
           <span class="material-symbols-rounded">article</span>
           <span class="recent-post-title">${escapeHtml(post.title)}</span>
@@ -365,6 +387,7 @@ async function loadDashboard() {
         <span class="recent-post-date">${formatDate(post.published)}</span>
       </div>
     `).join('');
+        bindPostOpenEvents(container);
     } catch (err) {
         showToast('加载仪表盘失败: ' + err.message, 'error');
     }
@@ -415,7 +438,7 @@ function renderPostsTable(posts) {
           <tr>
             <td class="cb-col"><input type="checkbox" class="post-checkbox" data-slug="${escapeAttr(post.slug)}" ${selectedPosts.has(post.slug) ? 'checked' : ''}></td>
             <td class="post-title-cell">
-              <span class="post-title-link" onclick="location.hash='#/edit/${post.slug}'">${escapeHtml(post.title)}</span>
+              <span class="post-title-link" data-post-open="${escapeAttr(post.slug)}" role="button" tabindex="0">${escapeHtml(post.title)}</span>
             </td>
             <td>${formatDate(post.published)}</td>
             <td>${post.category ? `<span class="category-chip">${escapeHtml(post.category)}</span>` : '-'}</td>
@@ -425,10 +448,10 @@ function renderPostsTable(posts) {
               ${post.pinned ? '<span class="pinned-badge">置顶</span>' : ''}
             </td>
             <td class="post-actions">
-              <button class="icon-btn" title="编辑" onclick="location.hash='#/edit/${post.slug}'">
+              <button class="icon-btn" title="编辑" data-post-open="${escapeAttr(post.slug)}">
                 <span class="material-symbols-rounded">edit</span>
               </button>
-              <button class="icon-btn btn-danger" title="删除" onclick="deletePost('${escapeAttr(post.slug)}')">
+              <button class="icon-btn btn-danger" title="删除" data-post-delete="${escapeAttr(post.slug)}">
                 <span class="material-symbols-rounded">delete</span>
               </button>
             </td>
@@ -439,8 +462,8 @@ function renderPostsTable(posts) {
   `;
 
     // 全选
-    document.getElementById('select-all-posts').addEventListener('change', (e) => {
-        const checkboxes = document.querySelectorAll('.post-checkbox');
+    container.querySelector('#select-all-posts').addEventListener('change', (e) => {
+        const checkboxes = container.querySelectorAll('.post-checkbox');
         checkboxes.forEach(cb => {
             cb.checked = e.target.checked;
             if (e.target.checked) selectedPosts.add(cb.dataset.slug);
@@ -450,11 +473,34 @@ function renderPostsTable(posts) {
     });
 
     // 单选
-    document.querySelectorAll('.post-checkbox').forEach(cb => {
+    container.querySelectorAll('.post-checkbox').forEach(cb => {
         cb.addEventListener('change', (e) => {
             if (e.target.checked) selectedPosts.add(e.target.dataset.slug);
             else selectedPosts.delete(e.target.dataset.slug);
             updateBatchDeleteBtn();
+        });
+    });
+
+    bindPostOpenEvents(container);
+    container.querySelectorAll('[data-post-delete]').forEach((button) => {
+        button.addEventListener('click', () => window.deletePost(button.dataset.postDelete));
+    });
+}
+
+function openPost(slug) {
+    if (typeof slug !== 'string' || !slug) return;
+    location.hash = `#/edit/${encodeURIComponent(slug)}`;
+}
+
+function bindPostOpenEvents(container) {
+    container.querySelectorAll('[data-post-open]').forEach((element) => {
+        const open = () => openPost(element.dataset.postOpen);
+        element.addEventListener('click', open);
+        element.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                open();
+            }
         });
     });
 }
@@ -513,7 +559,7 @@ window.deletePost = async function (slug) {
     const confirmed = await showConfirm('删除文章', `确定要删除 "${slug}" 吗？此操作不可撤销。`);
     if (!confirmed) return;
     try {
-        await api(`/posts/${slug}`, { method: 'DELETE' });
+        await api(`/posts/${encodeURIComponent(slug)}`, { method: 'DELETE' });
         postsCache = postsCache.filter(p => p.slug !== slug);
         renderPostsTable(postsCache);
         showToast('文章已删除', 'success');
@@ -1021,12 +1067,14 @@ function renderManagedPagesList(activeId = null) {
 }
 
 async function openManagedPage(id, updateHash = true) {
+    const requestId = ++managedPageRequestId;
     try {
         if (currentManagedPage && currentManagedPage.id !== id) {
             const confirmed = await confirmDiscardManagedChanges();
-            if (!confirmed) return;
+            if (!confirmed || requestId !== managedPageRequestId) return;
         }
         const data = await api(`/pages/${encodeURIComponent(id)}`);
+        if (requestId !== managedPageRequestId) return;
         currentManagedPage = data;
         managedPagePreviewVisible = false;
         managedCollectionItems = data.mode === 'collection' ? deepClone(data.items || []) : [];
@@ -1222,7 +1270,7 @@ function renderManagedField(field, item, pathPrefix = '') {
         return `
             <div class="managed-form-field ${fullWidthClass}">
                 <label>${escapeHtml(field.label)}${field.required ? ' *' : ''}</label>
-                <textarea data-field-path="${escapeAttr(fieldPath)}" rows="${field.rows || 4}" placeholder="${escapeAttr(field.placeholder || '')}">${escapeHtml(value || '')}</textarea>
+                <textarea data-field-path="${escapeAttr(fieldPath)}" rows="${field.rows || 4}" placeholder="${escapeAttr(field.placeholder || '')}">${escapeHtml(value ?? '')}</textarea>
                 ${field.help ? `<div class="managed-field-help">${escapeHtml(field.help)}</div>` : ''}
             </div>
         `;
@@ -1233,7 +1281,7 @@ function renderManagedField(field, item, pathPrefix = '') {
             <div class="managed-form-field ${fullWidthClass}">
                 <label>${escapeHtml(field.label)}${field.required ? ' *' : ''}</label>
                 <select data-field-path="${escapeAttr(fieldPath)}">
-                    ${field.options.map((option) => `<option value="${escapeAttr(option.value)}" ${String(value || '') === option.value ? 'selected' : ''}>${escapeHtml(option.label)}</option>`).join('')}
+                    ${field.options.map((option) => `<option value="${escapeAttr(option.value)}" ${String(value ?? '') === option.value ? 'selected' : ''}>${escapeHtml(option.label)}</option>`).join('')}
                 </select>
                 ${field.help ? `<div class="managed-field-help">${escapeHtml(field.help)}</div>` : ''}
             </div>
@@ -1490,7 +1538,7 @@ async function loadUsers() {
         container.innerHTML = data.users.map(u => `
             <div class="user-card">
                 <div class="user-card-avatar">
-                    ${u.avatar ? `<img src="${escapeHtml(u.avatar)}" alt="">` : `<span class="material-symbols-rounded">person</span>`}
+                    ${safeImageUrl(u.avatar) ? `<img src="${escapeAttr(safeImageUrl(u.avatar))}" alt="">` : `<span class="material-symbols-rounded">person</span>`}
                 </div>
                 <div class="user-card-info">
                     <span class="user-card-name">${escapeHtml(u.nickname || u.username)}</span>
@@ -1498,11 +1546,14 @@ async function loadUsers() {
                 </div>
                 <span class="user-card-role">${escapeHtml(u.role)}</span>
                 <span class="user-card-date">${formatDateTime(u.created_at)}</span>
-                <button class="icon-btn btn-danger" title="删除" onclick="deleteUser('${escapeAttr(u.username)}')">
+                <button class="icon-btn btn-danger" title="删除" data-user-delete="${escapeAttr(u.username)}">
                     <span class="material-symbols-rounded">delete</span>
                 </button>
             </div>
         `).join('');
+        container.querySelectorAll('[data-user-delete]').forEach((button) => {
+            button.addEventListener('click', () => window.deleteUser(button.dataset.userDelete));
+        });
     } catch (err) {
         showToast('加载用户列表失败: ' + err.message, 'error');
     }
@@ -1512,7 +1563,7 @@ window.deleteUser = async function (username) {
     const confirmed = await showConfirm('删除用户', `确定要删除用户 "${username}" 吗？`);
     if (!confirmed) return;
     try {
-        await api(`/settings/users/${username}`, { method: 'DELETE' });
+        await api(`/settings/users/${encodeURIComponent(username)}`, { method: 'DELETE' });
         showToast('用户已删除', 'success');
         loadUsers();
     } catch (err) {
@@ -1632,9 +1683,9 @@ function renderPagination(containerId, currentPage, total, pageSize, loadFn) {
     if (totalPages <= 1) { document.getElementById(containerId).innerHTML = ''; return; }
     const container = document.getElementById(containerId);
     let html = '';
-    if (currentPage > 0) html += `<button class="btn-text compact" onclick="void(0)" data-page="${currentPage - 1}">上一页</button>`;
+    if (currentPage > 0) html += `<button class="btn-text compact" data-page="${currentPage - 1}">上一页</button>`;
     html += `<span class="pagination-info">${currentPage + 1} / ${totalPages}</span>`;
-    if (currentPage < totalPages - 1) html += `<button class="btn-text compact" onclick="void(0)" data-page="${currentPage + 1}">下一页</button>`;
+    if (currentPage < totalPages - 1) html += `<button class="btn-text compact" data-page="${currentPage + 1}">下一页</button>`;
     container.innerHTML = html;
     container.querySelectorAll('button').forEach(btn => {
         btn.addEventListener('click', () => loadFn(parseInt(btn.dataset.page)));
@@ -1644,8 +1695,14 @@ function renderPagination(containerId, currentPage, total, pageSize, loadFn) {
 // Avatar
 function loadAvatarPreview() {
     const preview = document.getElementById('avatar-preview');
-    if (userProfile?.avatar) {
-        preview.innerHTML = `<img src="${escapeHtml(userProfile.avatar)}" alt="avatar">`;
+    const avatarSrc = safeImageUrl(userProfile?.avatar);
+    if (avatarSrc) {
+        preview.replaceChildren();
+        const image = document.createElement('img');
+        image.src = avatarSrc;
+        image.alt = 'avatar';
+        image.referrerPolicy = 'no-referrer';
+        preview.append(image);
     }
 }
 
@@ -1658,7 +1715,13 @@ document.getElementById('avatar-input').addEventListener('change', (e) => {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = (ev) => {
-        document.getElementById('avatar-preview').innerHTML = `<img src="${ev.target.result}" alt="preview">`;
+        const preview = document.getElementById('avatar-preview');
+        preview.replaceChildren();
+        const image = document.createElement('img');
+        image.src = typeof ev.target.result === 'string' ? ev.target.result : '';
+        image.alt = 'preview';
+        image.referrerPolicy = 'no-referrer';
+        preview.append(image);
         document.getElementById('btn-upload-avatar').classList.remove('hidden');
     };
     reader.readAsDataURL(file);
@@ -1686,7 +1749,8 @@ document.getElementById('btn-upload-avatar').addEventListener('click', async () 
 
         // 刷新欢迎区域头像
         const welcomeAvatar = document.getElementById('welcome-avatar');
-        welcomeAvatar.innerHTML = `<img src="${escapeHtml(data.avatar)}" alt="avatar">`;
+        const avatarSrc = safeImageUrl(data.avatar);
+        if (avatarSrc) welcomeAvatar.innerHTML = `<img src="${escapeAttr(avatarSrc)}" alt="avatar">`;
     } catch (err) {
         showToast('上传失败: ' + err.message, 'error');
     }
@@ -1721,13 +1785,39 @@ document.querySelectorAll('.nav-item[data-route]').forEach(n => {
 
 // ─── Utilities ─────────────────────────
 function escapeHtml(str) {
-    if (!str) return '';
-    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    if (str === null || str === undefined) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 }
 
 function escapeAttr(str) {
-    if (!str) return '';
-    return String(str).replace(/&/g, '&amp;').replace(/'/g, '&#39;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    if (str === null || str === undefined) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/'/g, '&#39;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+function safeImageUrl(value) {
+    if (typeof value !== 'string') return '';
+    const url = value.trim();
+    if (!url || url.startsWith('//') || /[\u0000-\u001f\u007f\\]/.test(url)) return '';
+    if (url.startsWith('/')) return url;
+    if (!/^[a-z][a-z\d+.-]*:/i.test(url)) return '';
+    try {
+        const parsed = new URL(url);
+        if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
+            || parsed.username || parsed.password || !parsed.hostname) return '';
+        return url;
+    } catch {
+        return '';
+    }
 }
 
 function formatDate(dateStr) {
@@ -1747,8 +1837,14 @@ window.api = api;
 window.showToast = showToast;
 window.showConfirm = showConfirm;
 window.escapeHtml = escapeHtml;
+window.escapeAttr = escapeAttr;
+window.safeImageUrl = safeImageUrl;
 window.metaCache = metaCache;
-window.postsCache = postsCache;
+Object.defineProperty(window, 'postsCache', {
+    configurable: true,
+    get: () => postsCache,
+    set: (value) => { postsCache = Array.isArray(value) ? value : []; },
+});
 
 // ─── Theme Toggle ──────────────────────
 function applyTheme(theme) {

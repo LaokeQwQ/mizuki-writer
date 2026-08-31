@@ -201,7 +201,7 @@ mizuki-writer/
 ### 1. 安装依赖
 
 ```bash
-npm install
+npm ci
 ```
 
 ### 2. 准备环境变量
@@ -232,14 +232,20 @@ npm start
 
 | 变量名 | 说明 |
 |---|---|
+| `HOST` | 监听地址，默认 `127.0.0.1`；对外提供服务时应放在 HTTPS 反向代理后并显式设置 |
 | `PORT` | 后台端口 |
-| `JWT_SECRET` | 登录 JWT 密钥；未设置时会在首次启动时自动生成并写入 `.env` |
+| `TRUST_PROXY` | 是否信任反向代理并使用代理转发的客户端 IP；`true` 信任一跳，也可填正整数，默认 `false` |
+| `CORS_ORIGIN` | 可选的跨域来源白名单，多个来源用逗号分隔；未设置时不启用 CORS |
+| `ENABLE_HSTS` | HTTPS 反向代理已验证可用时设为 `true`，为浏览器启用 HSTS |
+| `JWT_SECRET` | 登录 JWT 密钥；生产环境必须显式配置，开发环境缺省时仅使用不持久化的临时密钥 |
 | `ADMIN_USERNAME` | 默认管理员用户名 |
-| `ADMIN_PASSWORD_HASH` | 初始管理员密码哈希 |
+| `ADMIN_PASSWORD_HASH` | 可选的旧单管理员密码哈希迁移值；常规首次初始化请留空 |
 | `BLOG_DIR` | Mizuki 博客项目根目录 |
 | `TWIKOO_URL` | Twikoo 服务地址 |
+| `ALLOW_INSECURE_TWIKOO` | 是否允许 HTTP Twikoo 地址，仅建议本地开发使用 |
 | `TWIKOO_PASSWORD` | Twikoo 管理密码 |
 | `SITE_URL` | 站点完整 URL，用于 CDN 刷新 |
+| `ALLOW_INSECURE_SITE_URL` | 是否允许 HTTP 站点地址，仅建议本地开发使用 |
 | `DOGECLOUD_ACCESS_KEY` | DogeCloud AccessKey |
 | `DOGECLOUD_SECRET_KEY` | DogeCloud SecretKey |
 | `PG_HOST` | PostgreSQL 主机 |
@@ -247,6 +253,8 @@ npm start
 | `PG_DATABASE` | PostgreSQL 数据库名 |
 | `PG_USER` | PostgreSQL 用户名 |
 | `PG_PASSWORD` | PostgreSQL 密码 |
+| `PG_SSL` | 是否启用 PostgreSQL TLS |
+| `PG_SSL_REJECT_UNAUTHORIZED` | PostgreSQL TLS 是否校验证书，默认 `true` |
 
 ---
 
@@ -284,7 +292,7 @@ src/data/timeline.ts
 
 ### 强烈建议
 
-- 不要把 `.env` 提交到仓库
+- 不要把任何 `.env.*` 配置文件提交到仓库（`.env.example` 除外）
 - 不要在仓库里保留真实的 Twikoo 密码、数据库密码、DogeCloud 密钥
 - 若任何密钥曾在日志、聊天、截图或历史提交中暴露，请立即轮换
 
@@ -296,6 +304,9 @@ src/data/timeline.ts
 - 操作日志记录
 - 路径遍历防护
 - 结构化页面资源写入前校验
+- 受限的页面数据字面量解析（不会执行博客源码）
+- Markdown 预览中的原始 HTML 和危险链接过滤
+- 生产环境不自动把 JWT 密钥写入磁盘
 
 ---
 
@@ -349,7 +360,7 @@ src/data/timeline.ts
 示例：
 
 ```bash
-npm install
+npm ci --omit=dev
 pm2 start server.js --name mizuki-writer
 pm2 save
 ```
@@ -361,7 +372,7 @@ pm2 save
 示例思路：
 
 ```bash
-npm install
+npm ci --omit=dev
 screen -S mizuki-writer
 node server.js
 ```

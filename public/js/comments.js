@@ -2,8 +2,33 @@
    Mizuki Admin — Comments Management
    ============================================ */
 
+let commentsEventsBound = false;
+let commentsLoadRequestId = 0;
+
+function commentDomId(id) {
+    return encodeURIComponent(String(id));
+}
+
+function bindCommentEvents() {
+    if (commentsEventsBound) return;
+    const container = document.getElementById('comments-list');
+    if (!container) return;
+    commentsEventsBound = true;
+    container.addEventListener('click', (event) => {
+        const button = event.target.closest('[data-comment-action]');
+        if (!button) return;
+        const id = button.dataset.commentId;
+        const action = button.dataset.commentAction;
+        if (action === 'reply-toggle') window.toggleReplyForm(id);
+        if (action === 'reply-submit') window.submitReply(id, button.dataset.commentUrl || '');
+        if (action === 'delete') window.deleteComment(id);
+        if (action === 'spam') window.markSpam(id, button.dataset.spam === 'true');
+    });
+}
+
 // ─── Load Comments ─────────────────────
 window.loadComments = async function (page = 0) {
+    const requestId = ++commentsLoadRequestId;
     const container = document.getElementById('comments-list');
     container.innerHTML = `
     <div class="loading-state">
@@ -13,6 +38,7 @@ window.loadComments = async function (page = 0) {
 
     try {
         const data = await window.api(`/comments?page=${page}&pageSize=30`);
+        if (requestId !== commentsLoadRequestId) return;
 
         if (data.warning) {
             container.innerHTML = `
@@ -36,7 +62,9 @@ window.loadComments = async function (page = 0) {
         }
 
         container.innerHTML = data.comments.map(comment => renderComment(comment)).join('');
+        bindCommentEvents();
     } catch (err) {
+        if (requestId !== commentsLoadRequestId) return;
         container.innerHTML = `
       <div class="no-comments">
         <span class="material-symbols-rounded">error</span>
@@ -53,47 +81,48 @@ function renderComment(comment) {
     const content = comment.comment || '';
     const url = comment.url || '';
     const isSpam = comment.isSpam;
-    const id = comment._id || comment.id;
+    const id = String(comment._id || comment.id || '');
+    const domId = commentDomId(id);
 
     return `
-    <div class="comment-card ${isSpam ? 'spam' : ''}" data-id="${id}">
+    <div class="comment-card ${isSpam ? 'spam' : ''}" data-id="${window.escapeAttr(id)}">
       <div class="comment-header">
         <div class="comment-author">
           <div class="comment-avatar">${window.escapeHtml(avatar)}</div>
           <div>
             <div class="comment-nick">${window.escapeHtml(nick)}</div>
-            <div class="comment-time">${time}</div>
+            <div class="comment-time">${window.escapeHtml(time)}</div>
           </div>
           ${url ? `<span class="comment-url">${window.escapeHtml(url)}</span>` : ''}
           ${isSpam ? '<span class="draft-badge" style="background:#FFDAD6;color:#BA1A1A">垃圾评论</span>' : ''}
         </div>
       </div>
-      <div class="comment-content">${content}</div>
+      <div class="comment-content">${window.escapeHtml(content)}</div>
       <div class="comment-actions">
-        <button class="btn-text" onclick="toggleReplyForm('${id}')">
+        <button class="btn-text" data-comment-action="reply-toggle" data-comment-id="${window.escapeAttr(id)}">
           <span class="material-symbols-rounded" style="font-size:18px">reply</span>
           回复
         </button>
         ${isSpam
-            ? `<button class="btn-text" onclick="markSpam('${id}', false)">
+            ? `<button class="btn-text" data-comment-action="spam" data-comment-id="${window.escapeAttr(id)}" data-spam="false">
               <span class="material-symbols-rounded" style="font-size:18px">check</span>
               取消垃圾
             </button>`
-            : `<button class="btn-text" onclick="markSpam('${id}', true)">
+            : `<button class="btn-text" data-comment-action="spam" data-comment-id="${window.escapeAttr(id)}" data-spam="true">
               <span class="material-symbols-rounded" style="font-size:18px">block</span>
               标记垃圾
             </button>`
         }
-        <button class="btn-text btn-danger" onclick="deleteComment('${id}')">
+        <button class="btn-text btn-danger" data-comment-action="delete" data-comment-id="${window.escapeAttr(id)}">
           <span class="material-symbols-rounded" style="font-size:18px">delete</span>
           删除
         </button>
       </div>
-      <div class="comment-reply-form" id="reply-form-${id}">
-        <textarea class="comment-reply-textarea" id="reply-text-${id}" placeholder="输入回复内容…"></textarea>
+      <div class="comment-reply-form" id="reply-form-${domId}">
+        <textarea class="comment-reply-textarea" id="reply-text-${domId}" placeholder="输入回复内容…"></textarea>
         <div class="reply-actions">
-          <button class="btn-text" onclick="toggleReplyForm('${id}')">取消</button>
-          <button class="btn-primary compact" onclick="submitReply('${id}', '${url}')">
+          <button class="btn-text" data-comment-action="reply-toggle" data-comment-id="${window.escapeAttr(id)}">取消</button>
+          <button class="btn-primary compact" data-comment-action="reply-submit" data-comment-id="${window.escapeAttr(id)}" data-comment-url="${window.escapeAttr(url)}">
             <span class="material-symbols-rounded" style="font-size:16px">send</span>
             发送
           </button>
@@ -105,12 +134,14 @@ function renderComment(comment) {
 
 // ─── Reply ─────────────────────────────
 window.toggleReplyForm = function (id) {
-    const form = document.getElementById(`reply-form-${id}`);
+    const form = document.getElementById(`reply-form-${commentDomId(id)}`);
+    if (!form) return;
     form.classList.toggle('visible');
 };
 
 window.submitReply = async function (pid, url) {
-    const textarea = document.getElementById(`reply-text-${pid}`);
+    const textarea = document.getElementById(`reply-text-${commentDomId(pid)}`);
+    if (!textarea) return;
     const comment = textarea.value.trim();
     if (!comment) return window.showToast('回复内容不能为空', 'error');
 
@@ -121,7 +152,7 @@ window.submitReply = async function (pid, url) {
         });
         window.showToast('回复成功', 'success');
         textarea.value = '';
-        toggleReplyForm(pid);
+        window.toggleReplyForm(pid);
         // Reload comments
         setTimeout(() => window.loadComments(), 1000);
     } catch (err) {
@@ -135,10 +166,10 @@ window.deleteComment = async function (id) {
     if (!confirmed) return;
 
     try {
-        await window.api(`/comments/${id}`, { method: 'DELETE' });
+        await window.api(`/comments/${encodeURIComponent(id)}`, { method: 'DELETE' });
         window.showToast('评论已删除', 'success');
         // Remove the card from DOM
-        const card = document.querySelector(`.comment-card[data-id="${id}"]`);
+        const card = [...document.querySelectorAll('.comment-card')].find((item) => item.dataset.id === String(id));
         if (card) {
             card.style.opacity = '0';
             card.style.transform = 'translateX(20px)';
@@ -153,7 +184,7 @@ window.deleteComment = async function (id) {
 // ─── Spam ──────────────────────────────
 window.markSpam = async function (id, isSpam) {
     try {
-        await window.api(`/comments/${id}/spam`, {
+        await window.api(`/comments/${encodeURIComponent(id)}/spam`, {
             method: 'POST',
             body: JSON.stringify({ isSpam }),
         });
