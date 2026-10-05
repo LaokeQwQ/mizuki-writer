@@ -16,7 +16,7 @@
     "express": "^4.21.0",
     "gray-matter": "^4.0.3",
     "jsonwebtoken": "^9.0.2",
-    "marked": "^15.0.0",
+    "marked": "^18.0.14",
     "multer": "^2.3.0",
     "node-fetch": "^3.3.2",
     "pg": "^8.13.0"
