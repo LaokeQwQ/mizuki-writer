@@ -1,6 +1,6 @@
 {
   "name": "mizuki-writer",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A self-hosted writing and management panel for Mizuki-based blogs",
   "type": "module",
   "main": "server.js",
