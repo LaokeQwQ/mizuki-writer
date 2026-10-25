@@ -4,6 +4,9 @@
 
 let commentsEventsBound = false;
 let commentsLoadRequestId = 0;
+const COMMENTS_PAGE_SIZE = 30;
+let commentsCurrentPage = 0;
+let commentsTotal = 0;
 
 function commentDomId(id) {
     return encodeURIComponent(String(id));
@@ -29,7 +32,11 @@ function bindCommentEvents() {
 // ─── Load Comments ─────────────────────
 window.loadComments = async function (page = 0) {
     const requestId = ++commentsLoadRequestId;
+    const requestedPage = Number.isSafeInteger(Number(page)) && Number(page) >= 0 ? Number(page) : 0;
+    commentsCurrentPage = requestedPage;
     const container = document.getElementById('comments-list');
+    const pagination = document.getElementById('comments-pagination');
+    if (pagination) pagination.innerHTML = '';
     container.innerHTML = `
     <div class="loading-state">
       <span class="material-symbols-rounded">sync</span>
@@ -37,10 +44,11 @@ window.loadComments = async function (page = 0) {
     </div>`;
 
     try {
-        const data = await window.api(`/comments?page=${page}&pageSize=30`);
+        const data = await window.api(`/comments?page=${requestedPage}&pageSize=${COMMENTS_PAGE_SIZE}`);
         if (requestId !== commentsLoadRequestId) return;
 
         if (data.warning) {
+            commentsTotal = 0;
             container.innerHTML = `
         <div class="no-comments">
           <span class="material-symbols-rounded">settings</span>
@@ -49,30 +57,61 @@ window.loadComments = async function (page = 0) {
             请在 .env 文件中配置 TWIKOO_URL 和 TWIKOO_PASSWORD
           </p>
         </div>`;
+            renderCommentsPagination();
             return;
         }
 
         if (!data.comments || data.comments.length === 0) {
+            commentsTotal = Number.isSafeInteger(data.count) && data.count >= 0 ? data.count : 0;
             container.innerHTML = `
         <div class="no-comments">
           <span class="material-symbols-rounded">forum</span>
           <p>暂无评论</p>
         </div>`;
+            renderCommentsPagination();
             return;
         }
 
+        commentsTotal = Number.isSafeInteger(data.count) && data.count >= 0 ? data.count : data.comments.length;
         container.innerHTML = data.comments.map(comment => renderComment(comment)).join('');
         bindCommentEvents();
+        renderCommentsPagination();
     } catch (err) {
         if (requestId !== commentsLoadRequestId) return;
+        commentsTotal = 0;
         container.innerHTML = `
       <div class="no-comments">
         <span class="material-symbols-rounded">error</span>
         <p>加载评论失败</p>
         <p style="font-size:0.82rem;margin-top:8px;opacity:0.7">${window.escapeHtml(err.message)}</p>
       </div>`;
+        renderCommentsPagination();
     }
 };
+
+function renderCommentsPagination() {
+    const container = document.getElementById('comments-pagination');
+    if (!container) return;
+
+    const totalPages = Math.ceil(commentsTotal / COMMENTS_PAGE_SIZE);
+    if (totalPages <= 1) {
+        container.innerHTML = '';
+        return;
+    }
+
+    let html = '';
+    if (commentsCurrentPage > 0) {
+        html += `<button class="btn-text compact" data-comments-page="${commentsCurrentPage - 1}">上一页</button>`;
+    }
+    html += `<span class="pagination-info">${commentsCurrentPage + 1} / ${totalPages}</span>`;
+    if (commentsCurrentPage < totalPages - 1) {
+        html += `<button class="btn-text compact" data-comments-page="${commentsCurrentPage + 1}">下一页</button>`;
+    }
+    container.innerHTML = html;
+    container.querySelectorAll('button').forEach((button) => {
+        button.addEventListener('click', () => window.loadComments(Number(button.dataset.commentsPage)));
+    });
+}
 
 function renderComment(comment) {
     const nick = comment.nick || '匿名';
@@ -154,7 +193,7 @@ window.submitReply = async function (pid, url) {
         textarea.value = '';
         window.toggleReplyForm(pid);
         // Reload comments
-        setTimeout(() => window.loadComments(), 1000);
+        setTimeout(() => window.loadComments(commentsCurrentPage), 1000);
     } catch (err) {
         window.showToast('回复失败: ' + err.message, 'error');
     }
@@ -176,6 +215,13 @@ window.deleteComment = async function (id) {
             card.style.transition = 'all 0.3s ease';
             setTimeout(() => card.remove(), 300);
         }
+        commentsTotal = Math.max(0, commentsTotal - 1);
+        const totalPages = Math.ceil(commentsTotal / COMMENTS_PAGE_SIZE);
+        if (commentsCurrentPage > 0 && commentsCurrentPage >= totalPages) {
+            window.loadComments(commentsCurrentPage - 1);
+        } else {
+            renderCommentsPagination();
+        }
     } catch (err) {
         window.showToast('删除失败: ' + err.message, 'error');
     }
@@ -189,7 +235,7 @@ window.markSpam = async function (id, isSpam) {
             body: JSON.stringify({ isSpam }),
         });
         window.showToast(isSpam ? '已标记为垃圾评论' : '已取消垃圾标记', 'success');
-        window.loadComments();
+        window.loadComments(commentsCurrentPage);
     } catch (err) {
         window.showToast('操作失败: ' + err.message, 'error');
     }
@@ -197,5 +243,5 @@ window.markSpam = async function (id, isSpam) {
 
 // ─── Refresh ───────────────────────────
 document.getElementById('btn-refresh-comments').addEventListener('click', () => {
-    window.loadComments();
+    window.loadComments(commentsCurrentPage);
 });

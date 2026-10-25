@@ -1725,6 +1725,10 @@ select {
   gap: 12px;
 }
 
+.comments-pagination {
+  margin-top: 16px;
+}
+
 .comment-card {
   background: var(--md-surface-container-lowest);
   border: 1px solid var(--md-outline-variant);

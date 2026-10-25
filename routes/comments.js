@@ -1,8 +1,8 @@
 import express from 'express';
 import fetch from 'node-fetch';
-import crypto from 'crypto';
 import { authMiddleware, requireRole } from '../lib/auth.js';
 import { parsePage, parsePageSize } from '../lib/http.js';
+import { deriveTwikooAdminToken, getTwikooResponseError, toTwikooPage } from '../lib/twikoo.js';
 
 const router = express.Router();
 
@@ -60,14 +60,16 @@ async function getTwikooAccessToken() {
     const password = process.env.TWIKOO_PASSWORD;
     if (!password) throw new Error('TWIKOO_PASSWORD 未配置');
 
-    // Twikoo 使用 md5 哈希密码
-    const md5Hash = crypto.createHash('md5').update(password).digest('hex');
-
-    const result = await twikooApi('LOGIN', { password: md5Hash });
-    if (typeof result?.accessToken !== 'string' || !result.accessToken) {
-        throw new Error('Twikoo 登录响应无效');
+    // Twikoo 的管理员令牌是 md5(管理密码)。LOGIN 只负责校验密码并返回 code，
+    // 不会返回可用于 COMMENT_*_FOR_ADMIN 的 accessToken；因此这里自行派生，
+    // 并把令牌一并放进 LOGIN 请求，避免私有部署把它替换成匿名访客令牌。
+    const accessToken = deriveTwikooAdminToken(password);
+    const result = await twikooApi('LOGIN', { password: accessToken, accessToken });
+    const loginError = getTwikooResponseError(result);
+    if (loginError) {
+        throw new Error(`Twikoo 登录失败: ${loginError}`);
     }
-    return result.accessToken;
+    return accessToken;
 }
 
 // 获取评论列表
@@ -82,7 +84,7 @@ router.get('/', async (req, res) => {
         const params = {
             accessToken,
             per: parseInt(pageSize),
-            page: parseInt(page),
+            page: toTwikooPage(page),
         };
 
         if (url !== undefined) {
@@ -93,6 +95,9 @@ router.get('/', async (req, res) => {
         }
 
         const result = await twikooApi('COMMENT_GET_FOR_ADMIN', params);
+
+        const twikooError = getTwikooResponseError(result);
+        if (twikooError) throw new Error(twikooError);
 
         const comments = Array.isArray(result.data) ? result.data : [];
         const count = Number.isSafeInteger(result.count) && result.count >= 0 ? result.count : comments.length;
@@ -130,8 +135,10 @@ router.post('/reply', async (req, res) => {
         }
 
         const adminNick = nick || process.env.ADMIN_USERNAME || 'Admin';
+        const accessToken = await getTwikooAccessToken();
 
         const result = await twikooApi('COMMENT_SUBMIT', {
+            accessToken,
             pid,
             url: url || '/',
             comment,
@@ -139,6 +146,9 @@ router.post('/reply', async (req, res) => {
             mail: mail || '',
             ua: 'Mizuki Admin',
         });
+
+        const twikooError = getTwikooResponseError(result);
+        if (twikooError) throw new Error(twikooError);
 
         res.json({ success: true, data: result });
     } catch (err) {
@@ -158,6 +168,9 @@ router.delete('/:id', async (req, res) => {
             accessToken,
             id,
         });
+
+        const twikooError = getTwikooResponseError(result);
+        if (twikooError) throw new Error(twikooError);
 
         res.json({ success: true, data: result });
     } catch (err) {
@@ -180,8 +193,11 @@ router.post('/:id/spam', async (req, res) => {
         const result = await twikooApi('COMMENT_SET_SPAM_FOR_ADMIN', {
             accessToken,
             id,
-            isSpam: isSpam ?? true,
+            set: { isSpam: isSpam ?? true },
         });
+
+        const twikooError = getTwikooResponseError(result);
+        if (twikooError) throw new Error(twikooError);
 
         res.json({ success: true, data: result });
     } catch (err) {
